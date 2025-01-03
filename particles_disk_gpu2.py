@@ -16,8 +16,7 @@ WORLD_SIZE = 2000.0
 THREADS_PER_BLOCK = 256
 
 @cuda.jit
-def phase1_update_collision(px, py, vx, vy, npx, npy, nvx, nvy,
-                            radius, count, world_size):
+def phase1_update_collision(px, py, vx, vy, npx, npy, nvx, nvy, radius, count, world_size):
     i = cuda.grid(1)
     if i >= count:
         return
@@ -28,54 +27,64 @@ def phase1_update_collision(px, py, vx, vy, npx, npy, nvx, nvy,
     vx_i = vx[i]
     vy_i = vy[i]
 
+    # Update position with velocity
     x_new = x_i + vx_i * dt
     y_new = y_i + vy_i * dt
 
+    # Boundary collision
     if x_new < 0.0 or x_new > world_size:
         vx_i = -vx_i
+        x_new = min(max(x_new, 0.0), world_size)
     if y_new < 0.0 or y_new > world_size:
         vy_i = -vy_i
+        y_new = min(max(y_new, 0.0), world_size)
 
-    x_new = min(max(x_new, 0.0), world_size)
-    y_new = min(max(y_new, 0.0), world_size)
-
+    # Check collisions with other particles
     for j in range(count):
         if j == i:
             continue
+
         dx = px[j] - x_new
         dy = py[j] - y_new
         dist_sq = dx * dx + dy * dy
-        if dist_sq < (2.0 * radius) * (2.0 * radius):
-            d = math.sqrt(dist_sq)
-            if d > 0.0:
-                nx = dx / d
-                ny = dy / d
+        min_dist = 2.0 * radius
 
-                # Push-out so they don't stick
-                overlap = 2.0 * radius - d
-                x_new -= 0.5 * overlap * nx
-                y_new -= 0.5 * overlap * ny
-                px_j = px[j]
-                py_j = py[j]
-                px_j += 0.5 * overlap * nx
-                py_j += 0.5 * overlap * ny
-                px[j] = px_j
-                py[j] = py_j
+        if dist_sq < min_dist * min_dist:
+            dist = math.sqrt(dist_sq)
+            if dist < 1e-12:
+                dist = min_dist
+                dx = min_dist
+                dy = 0.0
 
-                # Symmetric reflection
-                vx_j = vx[j]
-                vy_j = vy[j]
-                rvx = vx_i - vx_j
-                rvy = vy_i - vy_j
-                dot = rvx * nx + rvy * ny
-                if dot < 0.0:
-                    vx_i -= dot * nx
-                    vy_i -= dot * ny
-                    vx_j += dot * nx
-                    vy_j += dot * ny
-                    vx[j] = vx_j
-                    vy[j] = vy_j
+            # Normal vector
+            nx = dx / dist
+            ny = dy / dist
 
+            # Relative velocity
+            dvx = vx[j] - vx_i
+            dvy = vy[j] - vy_i
+            rel_vel = dvx * nx + dvy * ny
+
+            # Only resolve if particles are moving toward each other
+            if rel_vel < 0:
+                impulse = -(1.0 + 1.0) * rel_vel / 2.0
+                ix = impulse * nx
+                iy = impulse * ny
+
+                # Update velocities symmetrically
+                vx_i -= ix
+                vy_i -= iy
+                vx[j] += ix
+                vy[j] += iy
+
+            # Minimal position correction to resolve overlap
+            overlap = min_dist - dist
+            x_new -= 0.5 * overlap * nx
+            y_new -= 0.5 * overlap * ny
+            px[j] += 0.5 * overlap * nx
+            py[j] += 0.5 * overlap * ny
+
+    # Write back new positions and velocities
     npx[i] = x_new
     npy[i] = y_new
     nvx[i] = vx_i
@@ -167,8 +176,8 @@ def main():
 
     pos_x = np.random.rand(PARTICLE_COUNT).astype(np.float32) * WORLD_SIZE
     pos_y = np.random.rand(PARTICLE_COUNT).astype(np.float32) * WORLD_SIZE
-    vel_x = (np.random.rand(PARTICLE_COUNT).astype(np.float32) - 0.5) * 50.0
-    vel_y = (np.random.rand(PARTICLE_COUNT).astype(np.float32) - 0.5) * 50.0
+    vel_x = (np.random.rand(PARTICLE_COUNT).astype(np.float32) - 0.5) * 200.0
+    vel_y = (np.random.rand(PARTICLE_COUNT).astype(np.float32) - 0.5) * 200.0
     new_pos_x = np.zeros_like(pos_x)
     new_pos_y = np.zeros_like(pos_y)
     new_vel_x = np.zeros_like(vel_x)
@@ -206,13 +215,12 @@ def main():
                 update_view()
 
             elif event.type == MOUSEWHEEL:
-                mx, my = pygame.mouse.get_pos()
-                wcx = offset_x + (mx / WIN_WIDTH) * (WORLD_SIZE / scale)
-                wcy = offset_y + ((WIN_HEIGHT - my) / WIN_HEIGHT) * (WORLD_SIZE / scale / aspect)
+                center_x = offset_x + (WORLD_SIZE / scale) * 0.5
+                center_y = offset_y + (WORLD_SIZE / scale / aspect) * 0.5
                 if event.y > 0:
-                    update_view(cx=wcx, cy=wcy, factor=1.1)
+                    update_view(cx=center_x, cy=center_y, factor=1.1)
                 else:
-                    update_view(cx=wcx, cy=wcy, factor=1.0 / 1.1)
+                    update_view(cx=center_x, cy=center_y, factor=1.0 / 1.1)
 
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1:
