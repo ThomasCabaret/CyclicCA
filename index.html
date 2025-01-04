@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Articles Viewer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+    }
+    .controls {
+      margin-bottom: 20px;
+    }
+    .controls select, .controls button {
+      padding: 10px;
+      margin-right: 10px;
+      font-size: 16px;
+    }
+    .container {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-around;
+    }
+    .card {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      margin: 20px;
+      padding: 20px;
+      width: 300px;
+      flex-grow: 1;
+    }
+    .card h2 {
+      font-size: 20px;
+      color: #333;
+      margin: 0 0 10px;
+    }
+    .card p {
+      color: #555;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .highlight-green {
+      background-color: #b6ffb6;
+    }
+    .highlight-purple {
+      background-color: #e3b6ff;
+    }
+    .card .theme {
+      font-weight: bold;
+      color: #0066cc;
+    }
+    .card .score {
+      font-size: 14px;
+      font-weight: bold;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <h1>Articles Viewer</h1>
+
+  <div class="controls">
+    <label for="theme-filter">Filter by theme:</label>
+    <select id="theme-filter">
+      <option value="all">All</option>
+      <option value="origin_of_life">Origin of Life</option>
+      <option value="synthetic_biology">Synthetic Biology</option>
+      <option value="multiple">Multiple</option>
+    </select>
+    <button onclick="sortBy('score')">Sort by Score</button>
+    <button onclick="sortBy('date')">Sort by Date</button>
+  </div>
+
+  <div class="container" id="articles-container"></div>
+
+  <!-- Papa Parse CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+
+  <script>
+    const scoringKeywords = {
+      "origin_of_life": [
+        "origin of life",
+        "abiogenesis",
+        "chemical evolution",
+        "prebiotic",
+        "pre-biotic",
+        "rna world",
+        "protocell",
+        "early life",
+        "primitive cell",
+        "autopoeisis",
+        "autopoeitic",
+        "metabolism-first",
+        "metabolism first",
+        "LUCA",
+        "vesicle",
+        "emergence",
+        "formation"
+      ],
+      "synthetic_biology": [
+        "synthetic biology",
+        "bottom-up",
+        "artificial cell",
+        "synthetic cell",
+        "autopoiesis",
+        "autopoietic",
+        "self-replication",
+        "self-replicating",
+        "self-assembly",
+        "self-organization",
+        "homeostasis",
+        "metabolism",
+        "proto-metabolism",
+        "energy transfer",
+        "energy conversion",
+        "atp production",
+        "chemiosmosis",
+        "membrane transport",
+        "ion channel",
+        "vesicle",
+        "compartmentalization",
+        "molecular network",
+        "gene circuit",
+        "genetic network",
+        "feedback loop",
+        "signaling pathway",
+        "information processing",
+        "minimal cell",
+        "protocell",
+        "liposome",
+        "vesicle fusion",
+        "protein synthesis",
+        "rna replication",
+        "dna synthesis",
+        "protein folding",
+        "enzyme",
+        "reaction network",
+        "biosynthesis",
+        "biochemical pathway",
+        "chemical communication",
+        "reproduction",
+        "division cycle",
+        "cell cycle",
+        "growth",
+        "evolution",
+        "adaptation"
+      ]
+    };
+
+
+    let articles = [];
+
+    window.addEventListener("DOMContentLoaded", () => {
+      loadCSV("articles.csv");
+    });
+
+    function loadCSV(csvFile) {
+      Papa.parse(csvFile, {
+        download: true,
+        header: true,
+        skipEmptyLines: true,
+        complete: function(results) {
+          articles = results.data;
+          displayArticles(articles);
+        },
+        error: function(err) {
+          console.error("Error reading CSV:", err);
+        }
+      });
+    }
+
+    function displayArticles(data) {
+      const container = document.getElementById("articles-container");
+      container.innerHTML = "";
+
+      data.forEach(article => {
+        const title = highlightKeywords(article.title || "No title");
+        const abstract = highlightKeywords(article.abstract || "No abstract");
+        const date = article.date || "No date";
+        const theme = article.dominant_theme || "";
+        const originScore = article.origin_of_life || "0";
+        const syntheticScore = article.synthetic_biology || "0";
+
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <h2>${title}</h2>
+          <p class="theme">Theme: ${theme}</p>
+          <p>${abstract}</p>
+          <p class="score">Score: Origin of Life: ${originScore}, Synthetic Biology: ${syntheticScore}</p>
+          <p>Date: ${date}</p>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function highlightKeywords(text) {
+      let highlightedText = text;
+
+      scoringKeywords["origin_of_life"].forEach(keyword => {
+        const regex = new RegExp(`\\b(${keyword})\\b`, "gi");
+        highlightedText = highlightedText.replace(regex, `<span class="highlight-green">$1</span>`);
+      });
+
+      scoringKeywords["synthetic_biology"].forEach(keyword => {
+        const regex = new RegExp(`\\b(${keyword})\\b`, "gi");
+        highlightedText = highlightedText.replace(regex, `<span class="highlight-purple">$1</span>`);
+      });
+
+      return highlightedText;
+    }
+
+    const themeFilter = document.getElementById("theme-filter");
+    themeFilter.addEventListener("change", () => {
+      const val = themeFilter.value;
+      if (val === "all") {
+        displayArticles(articles);
+      } else {
+        const filtered = articles.filter(a => a.dominant_theme === val);
+        displayArticles(filtered);
+      }
+    });
+
+    function sortBy(key) {
+      const selectedTheme = document.getElementById("theme-filter").value;
+      let sorted = [...articles];
+
+      if (key === "date") {
+        sorted.sort((a, b) => new Date(b.date) - new Date(a.date));
+      } else if (key === "score") {
+        if (selectedTheme === "origin_of_life" || selectedTheme === "synthetic_biology") {
+          sorted.sort((a, b) => {
+            const scoreA = parseInt(a[selectedTheme] || 0, 10);
+            const scoreB = parseInt(b[selectedTheme] || 0, 10);
+            return scoreB - scoreA;
+          });
+        }
+      }
+      displayArticles(sorted);
+    }
+  </script>
+</body>
+</html>
