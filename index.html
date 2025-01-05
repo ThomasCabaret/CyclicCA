@@ -13,15 +13,21 @@
     .controls {
       margin-bottom: 20px;
     }
-    .controls select, .controls button {
+    .controls select,
+    .controls button {
       padding: 10px;
       margin-right: 10px;
       font-size: 16px;
+      cursor: pointer;
+    }
+    .active-mode {
+      background-color: #ccc;
     }
     .container {
       display: flex;
       flex-wrap: wrap;
       justify-content: space-around;
+      /* No artificial limit here, so all articles should display if you scroll. */
     }
     .card {
       background-color: white;
@@ -57,6 +63,14 @@
       font-weight: bold;
       color: #333;
     }
+    .buttons {
+      display: flex;
+      gap: 5px;
+      margin-bottom: 10px;
+    }
+    .hidden-card {
+      border: 2px solid black;
+    }
   </style>
 </head>
 <body>
@@ -70,124 +84,97 @@
       <option value="synthetic_biology">Synthetic Biology</option>
       <option value="multiple">Multiple</option>
     </select>
-    <button onclick="sortBy('score')">Sort by Score</button>
-    <button onclick="sortBy('date')">Sort by Date</button>
+    <button id="score-btn" onclick="setSortMode('score')">Sort by Score</button>
+    <button id="date-btn" onclick="setSortMode('date')">Sort by Date</button>
+    <button id="all-btn" onclick="setDisplayMode('all')">Show All</button>
+    <button id="visible-btn" onclick="setDisplayMode('visible')">Show Visible</button>
+    <button id="interesting-btn" onclick="setDisplayMode('interesting')">Show Interesting</button>
+    <button id="reset-btn" onclick="resetAllTags()">Reset All Tags</button>
   </div>
 
   <div class="container" id="articles-container"></div>
 
-  <!-- Papa Parse CDN -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
-
   <script>
-    const scoringKeywords = {
-      "origin_of_life": [
-        "origin of life",
-        "abiogenesis",
-        "chemical evolution",
-        "prebiotic",
-        "pre-biotic",
-        "rna world",
-        "protocell",
-        "early life",
-        "primitive cell",
-        "autopoeisis",
-        "autopoeitic",
-        "metabolism-first",
-        "metabolism first",
-        "LUCA",
-        "vesicle",
-        "emergence",
-        "formation"
-      ],
-      "synthetic_biology": [
-        "synthetic biology",
-        "bottom-up",
-        "artificial cell",
-        "synthetic cell",
-        "autopoiesis",
-        "autopoietic",
-        "self-replication",
-        "self-replicating",
-        "self-assembly",
-        "self-organization",
-        "homeostasis",
-        "metabolism",
-        "proto-metabolism",
-        "energy transfer",
-        "energy conversion",
-        "atp production",
-        "chemiosmosis",
-        "membrane transport",
-        "ion channel",
-        "vesicle",
-        "compartmentalization",
-        "molecular network",
-        "gene circuit",
-        "genetic network",
-        "feedback loop",
-        "signaling pathway",
-        "information processing",
-        "minimal cell",
-        "protocell",
-        "liposome",
-        "vesicle fusion",
-        "protein synthesis",
-        "rna replication",
-        "dna synthesis",
-        "protein folding",
-        "enzyme",
-        "reaction network",
-        "biosynthesis",
-        "biochemical pathway",
-        "chemical communication",
-        "reproduction",
-        "division cycle",
-        "cell cycle",
-        "growth",
-        "evolution",
-        "adaptation"
-      ]
-    };
-
-
     let articles = [];
+    let scoringKeywords = {};
+    const tags = JSON.parse(localStorage.getItem('articleTags')) || {};
+    let displayMode = 'all';
+    let currentSort = '';
 
-    window.addEventListener("DOMContentLoaded", () => {
-      loadCSV("articles.csv");
-    });
+    // Load the scoring keywords, then load the CSV
+    fetch('scoring_keywords.json')
+      .then(res => res.json())
+      .then(json => {
+        scoringKeywords = json;
+        loadCSV('articles.csv');
+      })
+      .catch(err => {
+        console.error("Error loading scoring keywords:", err);
+      });
 
     function loadCSV(csvFile) {
-      Papa.parse(csvFile, {
+      const timestamp = new Date().getTime();  // Cache-busting query string
+      Papa.parse(`${csvFile}?_=${timestamp}`, {
         download: true,
         header: true,
         skipEmptyLines: true,
-        complete: function(results) {
+        complete: function (results) {
           articles = results.data;
           displayArticles(articles);
         },
-        error: function(err) {
+        error: function (err) {
           console.error("Error reading CSV:", err);
         }
       });
     }
 
     function displayArticles(data) {
+      let arr = [...data];
+      arr = applySortMode(arr);
       const container = document.getElementById("articles-container");
       container.innerHTML = "";
+      const selectedTheme = document.getElementById("theme-filter").value;
 
-      data.forEach(article => {
+      // Filter based on selected theme and display mode
+      let filtered = arr.filter(a => {
+        if (selectedTheme !== "all" && a.dominant_theme !== selectedTheme) return false;
+        const id = a.doi_url || (a.title || "no-title").replace(/\s+/g, '-').toLowerCase();
+        const tag = tags[id] || "visible";
+        if (displayMode === "interesting" && tag !== "interesting") return false;
+        if (displayMode === "visible" && tag === "hidden") return false;
+        return true;
+      });
+
+      filtered.forEach(article => {
+        const id = article.doi_url || (article.title || "no-title").replace(/\s+/g, '-').toLowerCase();
+        const tag = tags[id] || "visible";
         const title = highlightKeywords(article.title || "No title");
         const abstract = highlightKeywords(article.abstract || "No abstract");
         const date = article.date || "No date";
         const theme = article.dominant_theme || "";
         const originScore = article.origin_of_life || "0";
         const syntheticScore = article.synthetic_biology || "0";
+        const doiUrl = article.doi_url || "";
 
         const card = document.createElement("div");
         card.className = "card";
+        if (tag === "interesting") card.style.border = "2px solid green";
+        if (tag === "hidden") card.classList.add("hidden-card");
+
+        // Build the DOI link if present
+        const doiLink = doiUrl
+          ? `<p><a href="${doiUrl}" target="_blank">[DOI / URL]</a></p>`
+          : "";
+
         card.innerHTML = `
+          <div class="buttons">
+            <button onclick="setTag('${id}', 'interesting')">Interesting</button>
+            <button onclick="setTag('${id}', 'hidden')">Hide</button>
+            <button onclick="setTag('${id}', 'visible')">Clean</button>
+          </div>
           <h2>${title}</h2>
+          ${doiLink}
           <p class="theme">Theme: ${theme}</p>
           <p>${abstract}</p>
           <p class="score">Score: Origin of Life: ${originScore}, Synthetic Biology: ${syntheticScore}</p>
@@ -198,48 +185,76 @@
     }
 
     function highlightKeywords(text) {
-      let highlightedText = text;
+      let t = text;
+      if (!scoringKeywords.origin_of_life || !scoringKeywords.synthetic_biology) return t;
 
-      scoringKeywords["origin_of_life"].forEach(keyword => {
-        const regex = new RegExp(`\\b(${keyword})\\b`, "gi");
-        highlightedText = highlightedText.replace(regex, `<span class="highlight-green">$1</span>`);
+      scoringKeywords.origin_of_life.forEach(k => {
+        const r = new RegExp(`\\b(${k})\\b`, "gi");
+        t = t.replace(r, `<span class="highlight-green">$1</span>`);
       });
-
-      scoringKeywords["synthetic_biology"].forEach(keyword => {
-        const regex = new RegExp(`\\b(${keyword})\\b`, "gi");
-        highlightedText = highlightedText.replace(regex, `<span class="highlight-purple">$1</span>`);
+      scoringKeywords.synthetic_biology.forEach(k => {
+        const r = new RegExp(`\\b(${k})\\b`, "gi");
+        t = t.replace(r, `<span class="highlight-purple">$1</span>`);
       });
-
-      return highlightedText;
+      return t;
     }
 
-    const themeFilter = document.getElementById("theme-filter");
-    themeFilter.addEventListener("change", () => {
-      const val = themeFilter.value;
-      if (val === "all") {
-        displayArticles(articles);
-      } else {
-        const filtered = articles.filter(a => a.dominant_theme === val);
-        displayArticles(filtered);
-      }
+    document.getElementById("theme-filter").addEventListener("change", () => {
+      displayArticles(articles);
     });
 
-    function sortBy(key) {
-      const selectedTheme = document.getElementById("theme-filter").value;
-      let sorted = [...articles];
-
-      if (key === "date") {
-        sorted.sort((a, b) => new Date(b.date) - new Date(a.date));
-      } else if (key === "score") {
+    function applySortMode(arr) {
+      if (currentSort === 'date') {
+        arr.sort((a, b) => new Date(b.date) - new Date(a.date));
+      } else if (currentSort === 'score') {
+        const selectedTheme = document.getElementById("theme-filter").value;
         if (selectedTheme === "origin_of_life" || selectedTheme === "synthetic_biology") {
-          sorted.sort((a, b) => {
+          arr.sort((a, b) => {
             const scoreA = parseInt(a[selectedTheme] || 0, 10);
             const scoreB = parseInt(b[selectedTheme] || 0, 10);
             return scoreB - scoreA;
           });
         }
       }
-      displayArticles(sorted);
+      return arr;
+    }
+
+    function setSortMode(key) {
+      currentSort = key;
+      displayArticles(articles);
+    }
+
+    function setTag(id, tag) {
+      tags[id] = tag;
+      localStorage.setItem('articleTags', JSON.stringify(tags));
+      displayArticles(articles);
+    }
+
+    function setDisplayMode(mode) {
+      displayMode = mode;
+      updateModeButtons();
+      displayArticles(articles);
+    }
+
+    function updateModeButtons() {
+      ["all-btn","visible-btn","interesting-btn"].forEach(btn => {
+        document.getElementById(btn).classList.remove('active-mode');
+      });
+      if (displayMode === 'all') {
+        document.getElementById('all-btn').classList.add('active-mode');
+      } else if (displayMode === 'visible') {
+        document.getElementById('visible-btn').classList.add('active-mode');
+      } else if (displayMode === 'interesting') {
+        document.getElementById('interesting-btn').classList.add('active-mode');
+      }
+    }
+
+    function resetAllTags() {
+      const confirmReset = confirm("Are you sure you want to reset all tags?");
+      if (!confirmReset) return;
+      localStorage.removeItem('articleTags');
+      for (let key in tags) delete tags[key];
+      displayArticles(articles);
     }
   </script>
 </body>
