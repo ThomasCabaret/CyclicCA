@@ -1,5 +1,6 @@
 import requests
 import time
+import random
 from bs4 import BeautifulSoup
 import pandas as pd
 import os
@@ -7,13 +8,33 @@ import csv
 import re
 import json
 
+# Updated HEADERS with more browser-like headers
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:114.0) Gecko/20100101 Firefox/114.0"
-    )
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://scholar.google.com/",
+    "Connection": "keep-alive",
+    "DNT": "1",  # Do Not Track request header
 }
 
-# We keep the same search keywords
+# Helper function to rotate User-Agent strings
+def get_random_user_agent():
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/90.0.4430.93 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
+    ]
+    return random.choice(user_agents)
+
 search_keywords = {
     "origin_of_life": [
         "origin of life",
@@ -39,10 +60,10 @@ CSV_FILE = "articles.csv"
 START_YEAR = 2010
 START_DATE = "2010-01-01"
 END_DATE = "2100-01-01"
-MAX_GS_PAGES = 10       # number of pages to fetch from Google Scholar
-MAX_ARXIV_PAGES = 10    # number of pages to fetch from arXiv
-MAX_PUBMED_PAGES = 3   # number of pages to fetch from PubMed
-SLEEP_SECONDS = 20      # small delay between requests
+DEFAULT_MAX_PAGES = 3
+MAX_GS_PAGES = DEFAULT_MAX_PAGES
+MAX_ARXIV_PAGES = DEFAULT_MAX_PAGES
+SLEEP_SECONDS = 3
 
 def load_existing_articles():
     if os.path.exists(CSV_FILE):
@@ -94,115 +115,122 @@ def determine_dominant_theme(scores):
         return top[0]
     return "multiple"
 
-def scrape_google_scholar(keyword):
-    articles = []
-    for page in range(MAX_GS_PAGES):
-        print(f"Scraping Google Scholar page {page} for '{keyword}'.")
-        start_val = page * 10
-        url = (
-            f"https://scholar.google.com/scholar?start={start_val}"
-            f"&q={keyword.replace(' ', '+')}&as_ylo={START_YEAR}"
-        )
-        r = requests.get(url, headers=HEADERS)
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select('[data-lid]')
-        if not items:
-            # no more results
-            break
-        for item in items:
-            title_tag = item.select_one(".gs_rt")
-            abstract_tag = item.select_one(".gs_rs")
-            date_tag = item.select_one(".gs_a")
-            link = ""
-            if title_tag and title_tag.select_one("a"):
-                link = title_tag.select_one("a").get("href", "")
-            title = title_tag.text if title_tag else "No title"
-            abstract = abstract_tag.text if abstract_tag else "No abstract"
-            date = ""
-            if date_tag:
-                parts = date_tag.text.split("-")
-                date = parts[-1].strip() if parts else ""
-            articles.append({
-                "title": title.strip(),
-                "abstract": abstract.strip(),
-                "date": date,
-                "source": "Google Scholar",
-                "doi_url": link.strip()
-            })
-        time.sleep(SLEEP_SECONDS)
-    print(f"Found {len(articles)} from Google Scholar for '{keyword}'.")
-    return articles
+def keyword_in_text(keyword, text):
+    return keyword.lower() in text.lower()
 
-def scrape_arxiv(keyword):
+def parse_date(date_text, separator="-"):
+    if not date_text:
+        return ""
+    parts = date_text.split(separator)
+    if parts:
+        return parts[-1].strip()
+    return ""
+
+def scrape_site(
+    keyword,
+    url_template,
+    item_selector,
+    title_selector,
+    abstract_selector,
+    date_selector,
+    link_selector,
+    pagination_step,
+    max_pages,
+    source,
+    date_separator="-"
+):
     articles = []
-    for page in range(MAX_ARXIV_PAGES):
-        print(f"Scraping arXiv page {page} for '{keyword}'.")
-        start_val = page * 50
-        url = (
-            f"https://arxiv.org/search/?query={keyword.replace(' ', '+')}"
-            f"&searchtype=all&abstracts=show&order=-announced_date_first"
-            f"&date-filter_by=last_update_date&date-from_date={START_DATE}"
-            f"&date-to_date={END_DATE}"
-            f"&start={start_val}"
+    session = requests.Session()  # Use a session to handle cookies
+    for page in range(max_pages):
+        print(f"Scraping {source} page {page} for '{keyword}'.")
+        start_val = page * pagination_step
+        url = url_template.format(
+            keyword=keyword.replace(" ", "+"),
+            start=start_val,
+            year=START_YEAR
         )
-        r = requests.get(url, headers=HEADERS)
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select(".arxiv-result")
-        if not items:
+
+        # Rotate User-Agent for each request
+        headers = HEADERS.copy()
+        headers["User-Agent"] = get_random_user_agent()
+
+        try:
+            r = session.get(url, headers=headers)
+        except requests.exceptions.RequestException as e:
+            print(f"Error accessing {source} for '{keyword}': {e}")
             break
+
+        # Detect if captcha or block is encountered
+        if r.status_code != 200 or "captcha" in r.text.lower() or "recaptcha" in r.text.lower():
+            print(f"Captcha or block detected on {source} for '{keyword}', stopping.")
+            break
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        items = soup.select(item_selector)
+        if not items:
+            print(f"No items found on page {page} for {source}, stopping pagination.")
+            break
+
         for item in items:
-            title_tag = item.select_one(".title")
-            abstract_tag = item.select_one(".abstract")
-            date_tag = item.select_one(".submitted")
-            link_tag = item.select_one(".list-title a")
-            link = link_tag.get("href") if link_tag else ""
+            title_tag = item.select_one(title_selector) if title_selector else None
+            abstract_tag = item.select_one(abstract_selector) if abstract_selector else None
+            date_tag = item.select_one(date_selector) if date_selector else None
+            link_tag = item.select_one(link_selector) if link_selector else None
+
             title = title_tag.text.strip() if title_tag else "No title"
             abstract = abstract_tag.text.strip() if abstract_tag else "No abstract"
-            date = ""
-            if date_tag:
-                parts = date_tag.text.split(";")
-                date = parts[-1].strip() if parts else ""
-            articles.append({
-                "title": title,
-                "abstract": abstract,
-                "date": date,
-                "source": "arXiv",
-                "doi_url": link.strip()
-            })
-        time.sleep(SLEEP_SECONDS)
-    print(f"Found {len(articles)} from arXiv for '{keyword}'.")
+            link = link_tag.get("href").strip() if link_tag else ""
+            date_text = date_tag.text.strip() if date_tag else ""
+            parsed_date = parse_date(date_text, separator=date_separator)
+
+            if keyword_in_text(keyword, title) or keyword_in_text(keyword, abstract):
+                articles.append({
+                    "title": title,
+                    "abstract": abstract,
+                    "date": parsed_date,
+                    "source": source,
+                    "doi_url": link
+                })
+
+        # Introduce a random delay to avoid bot detection
+        time.sleep(SLEEP_SECONDS + random.uniform(0, 5))
+
+    print(f"Found {len(articles)} articles from {source} for '{keyword}'.")
     return articles
 
-# def scrape_pubmed(keyword):
-#     articles = []
-#     for page in range(1, MAX_PUBMED_PAGES + 1):
-#         url = (
-#             f"https://pubmed.ncbi.nlm.nih.gov/?term={keyword.replace(' ', '+')}"
-#             f"&filter=years.{START_YEAR}-&page={page}"
-#         )
-#         r = requests.get(url, headers=HEADERS)
-#         soup = BeautifulSoup(r.text, "html.parser")
-#         items = soup.select(".docsum-content")
-#         if not items:
-#             break
-#         for item in items:
-#             title_tag = item.select_one(".docsum-title")
-#             link_tag = title_tag.get("href") if title_tag else ""
-#             link = f"https://pubmed.ncbi.nlm.nih.gov{link_tag}" if link_tag else ""
-#             date_tag = item.select_one(".docsum-journal-citation.full-journal-citation")
-#             date = date_tag.text.strip() if date_tag else ""
-#             title = title_tag.text.strip() if title_tag else "No title"
-#             abstract = "No abstract"
-#             articles.append({
-#                 "title": title,
-#                 "abstract": abstract,
-#                 "date": date,
-#                 "source": "PubMed",
-#                 "doi_url": link.strip()
-#             })
-#         time.sleep(SLEEP_SECONDS)
-#     print(f"Found {len(articles)} from PubMed for '{keyword}'.")
-#     return articles
+def scrape_google_scholar(keyword):
+    return scrape_site(
+        keyword=keyword,
+        # Use {year} inside the URL to inject the global START_YEAR
+        url_template="https://scholar.google.com/scholar?start={start}&q={keyword}&as_ylo={year}",
+        item_selector=".gs_r .gs_ri",
+        title_selector=".gs_rt",
+        abstract_selector=".gs_rs",
+        date_selector=".gs_a",
+        link_selector=".gs_rt a",
+        pagination_step=10,
+        max_pages=MAX_GS_PAGES,
+        source="Google Scholar",
+        date_separator="-"
+    )
+
+def scrape_arxiv(keyword):
+    return scrape_site(
+        keyword=keyword,
+        url_template=(
+            "https://arxiv.org/search/?query={keyword}"
+            "&searchtype=all&abstracts=show&order=-announced_date_first&start={start}"
+        ),
+        item_selector=".arxiv-result",
+        title_selector=".title",
+        abstract_selector=".abstract",
+        date_selector=".submitted",
+        link_selector=".list-title a",
+        pagination_step=50,
+        max_pages=MAX_ARXIV_PAGES,
+        source="arXiv",
+        date_separator=";"
+    )
 
 def main():
     existing = load_existing_articles()
@@ -237,20 +265,6 @@ def main():
                         all_articles.append(a)
             except Exception as e:
                 print(f"Error on arXiv for '{kw}': {e}")
-
-#             try:
-#                 pm_items = scrape_pubmed(kw)
-#                 for a in pm_items:
-#                     a = clean_article(a)
-#                     if not is_duplicate(a, all_articles):
-#                         scores = compute_theme_scores(a["title"], a["abstract"])
-#                         if sum(scores.values()) == 0:
-#                             continue
-#                         a.update(scores)
-#                         a["dominant_theme"] = determine_dominant_theme(scores)
-#                         all_articles.append(a)
-#             except Exception as e:
-#                 print(f"Error on PubMed for '{kw}': {e}")
 
     save_articles_to_csv(all_articles)
     print(f"{len(all_articles)} articles saved in '{CSV_FILE}'.")
